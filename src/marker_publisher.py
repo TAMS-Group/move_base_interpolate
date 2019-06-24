@@ -14,6 +14,7 @@ def publishMarkers(markerPublisher, bounds):
 		marker = Marker()
 		marker.header.frame_id = "map"
 		marker.header.stamp = rospy.Time.now()
+		marker.ns = "legal_area_corners"
 		marker.id = markerCount
 		marker.type = 3
 		marker.action = Marker.ADD
@@ -37,6 +38,7 @@ def publishMarkers(markerPublisher, bounds):
 	marker = Marker()
 	marker.header.frame_id = "map"
 	marker.header.stamp = rospy.Time.now()
+	marker.ns = "legal_area_border"
 	marker.id = markerCount
 	marker.type = 4
 	marker.action = Marker.ADD
