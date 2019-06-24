@@ -91,7 +91,7 @@ def publishMarkers(markerPublisher, tableLinePublisher, Bounds, CustomerLine, Ba
 
 
 if __name__ == '__main__':
-	rospy.init_node("marker_publisher")
+	rospy.init_node("move_base_markers")
 	markerPublisher = rospy.Publisher('/pr2_markers/legal_area', MarkerArray, queue_size=32)
 
 	tableLinePublisher = rospy.Publisher('/pr2_markers/customer_line', Marker, queue_size=32)
