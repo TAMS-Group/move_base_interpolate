@@ -60,9 +60,11 @@ class MoveAction(object):
 		
                 self._tfBuffer = tf2_ros.Buffer()
                 self._listener = tf2_ros.TransformListener(self._tfBuffer)
-                
+
 		self._feedback = move_base_msgs.msg.MoveBaseFeedback()
 		self._result = move_base_msgs.msg.MoveBaseResult()
+
+		rospy.loginfo("move_base_interpolate startup successful")
 
         def move_base_simple_cb(self, data):
                 print("resending move_base_simple/goal msg as an action")
@@ -246,12 +248,12 @@ class MoveAction(object):
 if __name__ == '__main__':
 	rospy.init_node("move_base")
 	#Bounds = [float(i) for i in rospy.get_param('pr2_area').split(',')]
+	AREA_PARAMETER= 'move_base/legal_area'
+
 	try:
-		Bounds = rospy.get_param('pr2_area')
-		server = MoveAction(rospy.get_name(), Bounds)
+		bounds = rospy.get_param(AREA_PARAMETER)
+
+		server = MoveAction(rospy.get_name(), bounds)
 		rospy.spin()
 	except KeyError: # Parameters were not defined.
-		rospy.logerr("[move_action.py] No legal area was defined. Please define a collision free area in the pr2_area parameter.")
-		rospy.loginfo("move action server did not start correctly.")
-
-
+		rospy.logerr("[move_action.py] No legal area was defined. Please define a convex, obstacle-free area in the " + AREA_PARAMETER + " parameter.")
