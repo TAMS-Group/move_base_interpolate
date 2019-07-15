@@ -5,11 +5,16 @@ from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from move_base_interpolate import scaleArea
 
-
-
 def publishMarkers(markerPublisher, bounds):
-        # TODO: make this a ros_param
-        soft_bounds = scaleArea(bounds, 0.95)
+        SOFT_BOUND_PARAMETER = 'move_base/soft_bound'
+        soft_bound_scale = 0.95
+        
+        try:
+                soft_bound_scale = rospy.get_param(SOFT_BOUND_PARAMETER)
+        except KeyError: # Parameters were not defined.
+		rospy.loginfo("move_base/soft_bound was not defined.")
+
+        soft_bounds = scaleArea(bounds, soft_bound_scale)
 
         markerCount = 0
 	length = len(bounds)

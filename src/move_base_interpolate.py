@@ -32,7 +32,6 @@ class Pose2D(object):
                 self.y = y
                 self.theta = theta
 
-# TODO: make the scale a ros param and think about if is should be a scale or a distance
 def scaleArea(points,scale):
         xs = points[0::2]
         ys = points[1::2]
@@ -53,12 +52,9 @@ def scaleArea(points,scale):
                 new_points.append(newy)
 
         return new_points
-#
-# TODO: Adding a soft margin to the safe area. Otherwise the robot can accidently drive onto
-#       the border and is stuck.
-#
+
 class MoveAction(object):
-	def __init__(self, name, Bounds):
+	def __init__(self, name, Bounds, soft_bound_scale):
 		self.x = None
 		self.y = None
 		self.theta = None
@@ -78,7 +74,7 @@ class MoveAction(object):
 		self.markerPublisher = rospy.Publisher('/pr2_markers/goal_position', Marker, queue_size=32)
 
                 self.HardBound = Bounds
-                self.SoftBound = scaleArea(Bounds, 0.95)
+                self.SoftBound = scaleArea(Bounds, soft_bound_scale)
 		
                 self._tfBuffer = tf2_ros.Buffer()
                 self._listener = tf2_ros.TransformListener(self._tfBuffer)
@@ -270,11 +266,19 @@ class MoveAction(object):
 if __name__ == '__main__':
 	rospy.init_node("move_base")
 	AREA_PARAMETER = 'move_base/legal_area'
+        SOFT_BOUND_PARAMETER = 'move_base/soft_bound'
+        soft_bound_scale = 0.95
+        
+        try:
+                soft_bound_scale = rospy.get_param(SOFT_BOUND_PARAMETER)
+        except KeyError: # Parameters were not defined.
+		rospy.loginfo("move_base/soft_bound was not defined.")
 
+        
 	try:
 		bounds = rospy.get_param(AREA_PARAMETER)
 
-		server = MoveAction(rospy.get_name(), bounds)
+		server = MoveAction(rospy.get_name(), bounds, soft_bound_scale)
 		rospy.spin()
 	except KeyError: # Parameters were not defined.
-		rospy.logerr("[move_action.py] No legal area was defined. Please define a convex, obstacle-free area in the " + AREA_PARAMETER + " parameter.")
+		rospy.logerr("No legal area was defined. Please define a convex, obstacle-free area in the " + AREA_PARAMETER + " parameter.")
