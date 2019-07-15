@@ -32,9 +32,30 @@ class Pose2D(object):
                 self.y = y
                 self.theta = theta
 
+# TODO: make the scale a ros param and think about if is should be a scale or a distance
+def scaleArea(points,scale):
+        xs = points[0::2]
+        ys = points[1::2]
+        centerx = sum(xs)/len(xs)
+        centery = sum(ys)/len(ys)
 
+        # scale*r = sqrt(scale^2*(x^2+y^2))
+        scale_squared = scale*scale
+        new_points = []
+        for x,y in zip(xs,ys):
+                relx = x - centerx
+                rely = y - centery
+
+                newx = (relx*scale_squared)+centerx
+                newy = (rely*scale_squared)+centery
+
+                new_points.append(newx)
+                new_points.append(newy)
+
+        return new_points
 #
-# TODO: reimplement the old action interface. Ohterwise the trixi_bartender_demo won't work anymore!!!
+# TODO: Adding a soft margin to the safe area. Otherwise the robot can accidently drive onto
+#       the border and is stuck.
 #
 class MoveAction(object):
 	def __init__(self, name, Bounds):
@@ -56,7 +77,8 @@ class MoveAction(object):
                 self.publisher = rospy.Publisher('/base_controller/command', Twist, queue_size=10)
 		self.markerPublisher = rospy.Publisher('/pr2_markers/goal_position', Marker, queue_size=32)
 
-                self.Bounds = Bounds
+                self.HardBound = Bounds
+                self.SoftBound = scaleArea(Bounds, 0.95)
 		
                 self._tfBuffer = tf2_ros.Buffer()
                 self._listener = tf2_ros.TransformListener(self._tfBuffer)
@@ -112,7 +134,7 @@ class MoveAction(object):
                 pos = Pose2D(self.x,self.y,self.theta)
                 
 		# Check if trixi is inside the bounds
-		if not self.check_bounds(pos):
+		if not self.check_bounds(pos, self.HardBound):
 			rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
 			#self._result.success = False
 			#self._result.error_message = "Trixi is not in the legal area. Please use the joystick to navigate into the legal area."
@@ -124,8 +146,8 @@ class MoveAction(object):
                 goalMap = self._tfBuffer.transform(goal.target_pose,"map")
                 ignored1,ignored2,yaw = euler_from_quaternion([goalMap.pose.orientation.x,goalMap.pose.orientation.y,goalMap.pose.orientation.z,goalMap.pose.orientation.w])
                 goal2D = Pose2D(goalMap.pose.position.x, goalMap.pose.position.y, yaw)
-		if not self.check_bounds(goal2D):
-			rospy.logwarn('Requested point is outside the legal bounds.')
+		if not self.check_bounds(goal2D, self.SoftBound):
+			rospy.logwarn('Requested point is outside the legal soft bound.')
 			#self._result.success = False
 			#self._result.error_message = "Requested point is outside the legal bounds."
 			self._as.set_aborted(self._result)
@@ -137,7 +159,7 @@ class MoveAction(object):
 		while not rospy.is_shutdown():
 			# Check if trixi is inside the bounds
 			pos.updatePose(self.x,self.y,self.theta)
-			if not self.check_bounds(pos):
+			if not self.check_bounds(pos, self.HardBound):
 				rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
 				#self._result.success = False
 				#self._result.error_message = "Trixi is not in the legal area. Please use the joystick to navigate into the legal area."
@@ -196,16 +218,16 @@ class MoveAction(object):
 
 	# follows https://rosettacode.org/wiki/Ray-casting_algorithm#Python
 	# Checks if the goal is in the convex polygon with the corners in Bounds
-	def check_bounds(self, goal):
-		length = len(self.Bounds)
+	def check_bounds(self, goal, Bound):
+		length = len(Bound)
 		count = 0
 		# iterating over the edges		
 		for i in range(0,length-1,2):
 
-			ax = self.Bounds[i]
-			ay = self.Bounds[i+1]
-			bx = self.Bounds[(i+2)%length]
-			by = self.Bounds[(i+3)%length]
+			ax = Bound[i]
+			ay = Bound[i+1]
+			bx = Bound[(i+2)%length]
+			by = Bound[(i+3)%length]
 
 			# makes sure b is the point with the greater y value
 			if ay > by:
@@ -247,8 +269,7 @@ class MoveAction(object):
 
 if __name__ == '__main__':
 	rospy.init_node("move_base")
-	#Bounds = [float(i) for i in rospy.get_param('pr2_area').split(',')]
-	AREA_PARAMETER= 'move_base/legal_area'
+	AREA_PARAMETER = 'move_base/legal_area'
 
 	try:
 		bounds = rospy.get_param(AREA_PARAMETER)
