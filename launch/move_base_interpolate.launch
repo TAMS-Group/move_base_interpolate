@@ -1,5 +1,4 @@
 <?xml version="1.0"?>
 <launch>
 	<node name="move_base" pkg="move_base_interpolate" type="move_base_interpolate.py" output="screen" />
-	<node name="move_base_markers" pkg="move_base_interpolate" type="marker_publisher.py" />
 </launch>

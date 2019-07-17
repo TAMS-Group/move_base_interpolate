@@ -6,7 +6,7 @@ from geometry_msgs.msg import Point
 from move_base_interpolate import scaleArea
 
 def publishMarkers(markerPublisher, bounds):
-        SOFT_BOUND_PARAMETER = 'move_base/soft_bound'
+        SOFT_BOUND_PARAMETER = 'move_base/bounds_tolerance_scale'
         soft_bound_scale = 0.95
         
         try:
