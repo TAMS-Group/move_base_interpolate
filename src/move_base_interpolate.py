@@ -38,7 +38,6 @@ def scaleArea(points,scale):
 	centerx = sum(xs)/len(xs)
 	centery = sum(ys)/len(ys)
 
-	# scale*r = sqrt(scale^2*(x^2+y^2))
 	scale_squared = scale*scale
 	new_points = []
 	for x,y in zip(xs,ys):
@@ -204,33 +203,23 @@ class MoveAction(object):
 		# Check if trixi is inside the bounds
 		if not self.check_bounds(pos, self.HardBound):
 			rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
-			#self._result.success = False
-			#self._result.error_message = "Trixi is not in the legal area. Please use the joystick to navigate into the legal area."
 			self._as.set_aborted(self._result)
 			return
 
 		# Check if the target is inside the bounds
-		#self._transformer.waitForTransform('map', goal.target_pose.header.frame_id, rospy.Time(), rospy.Duration(2))
 		goalMap = self._tfBuffer.transform(goal.target_pose,"map")
 		ignored1,ignored2,yaw = euler_from_quaternion([goalMap.pose.orientation.x,goalMap.pose.orientation.y,goalMap.pose.orientation.z,goalMap.pose.orientation.w])
 		goal2D = Pose2D(goalMap.pose.position.x, goalMap.pose.position.y, yaw)
 		if not self.check_bounds(goal2D, self.SoftBound):
 			rospy.logwarn('Requested point is outside the legal soft bound.')
-			#self._result.success = False
-			#self._result.error_message = "Requested point is outside the legal bounds."
 			self._as.set_aborted(self._result)
 			return
 
-		integral_angle = 0
-		integral_translation_x = 0
-		integral_translation_y = 0
 		while not rospy.is_shutdown():
 			# Check if trixi is inside the bounds
 			pos.updatePose(self.x,self.y,self.theta)
 			if not self.check_bounds(pos, self.HardBound):
 				rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
-				#self._result.success = False
-				#self._result.error_message = "Trixi is not in the legal area. Please use the joystick to navigate into the legal area."
 				self._as.set_aborted(self._result)
 				return
 
@@ -240,26 +229,20 @@ class MoveAction(object):
 				success = False
 				break
 			try:
-				goal.target_pose.header.stamp = rospy.Time() #rospy.get_rostime()
+				goal.target_pose.header.stamp = rospy.Time()
 				goalBaseLink = self._tfBuffer.transform(goal.target_pose, 'base_footprint')
 				dir = goalBaseLink.pose.position
 				ignored1,ignored2,angle_diff = euler_from_quaternion([goalBaseLink.pose.orientation.x,goalBaseLink.pose.orientation.y,goalBaseLink.pose.orientation.z,goalBaseLink.pose.orientation.w])
 				# TODO: fine tune on trixi
-				# TODO: PI-controller
 				translation_error = math.sqrt(dir.x**2 + dir.y**2)
-				integral_angle += angle_diff
-				integral_translation_x += dir.x
-				integral_translation_y += dir.y
 				if not(-0.087 < angle_diff < 0.087):  # ca. 5 degrees of tollerance
 					message = Twist()
 					max_ang_vel = math.pi/6
-					# TODO fine tune on trixi
 					message.angular.z = clamp(angle_diff*0.8,-max_ang_vel,max_ang_vel)
 					self.publisher.publish(message)
 				elif not (translation_error < 0.1):
 					message = Twist()
 					max_lin_vel = 0.15
-					# TODO fine tune on trixi
 					message.linear.x = clamp(dir.x,-max_lin_vel,max_lin_vel)
 					message.linear.y = clamp(dir.y,-max_lin_vel,max_lin_vel)
 					self.publisher.publish(message)
@@ -267,7 +250,6 @@ class MoveAction(object):
 					break
 
 				# TODO: fill out move_base feedback
-				# should you use the amcl position or just ask tf for (0,0,0) base_footprint transformed to map
 				self._as.publish_feedback(self._feedback)
 
 			# TODO: doublecheck the documentation if these exceptions are still relevant in tf2_ros for the transform method
@@ -279,8 +261,6 @@ class MoveAction(object):
 			rate.sleep()
 
 		if success:
-			#self._result.success = True
-			#self._result.error_message = "We successfully reached the specified goal."
 			rospy.loginfo('Succeeded')
 			self._as.set_succeeded(self._result)
 
