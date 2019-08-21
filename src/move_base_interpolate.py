@@ -14,6 +14,17 @@ import sys
 FLOAT_MAX = sys.float_info.max
 FLOAT_MIN = sys.float_info.min
 
+def vec_clamp(vec, min, max):
+	length = np.sqrt(vec.x*vec.x +vec.y*vec.y)
+	if length < min:
+		vec.x = (vec.x/length)*min
+		vec.y = (vec.y/length)*min
+	if length > max:
+		vec.x = (vec.x/length)*max
+		vec.y = (vec.y/length)*max
+	return vec
+
+
 def clamp(x,min,max):
 	if x < min:
 		x = min
@@ -241,8 +252,9 @@ class MoveAction(object):
 					message.angular.z = clamp(angle_diff*0.8,-max_ang_vel,max_ang_vel)
 
 					max_lin_vel = 0.15
-					message.linear.x = clamp(dir.x,-max_lin_vel,max_lin_vel)
-					message.linear.y = clamp(dir.y,-max_lin_vel,max_lin_vel)
+					dir = vec_clamp(dir, -max_lin_vel, max_lin_vel)
+					message.linear.x = dir.x
+					message.linear.y = dir.y
 					self.publisher.publish(message)
 				else:
 					break
