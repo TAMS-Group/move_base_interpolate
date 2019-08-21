@@ -65,9 +65,10 @@ def scaleArea(points,scale):
 
 class MoveAction(object):
 	def __init__(self, name, Bounds, bound_scale):
-		self.x = None
-		self.y = None
-		self.theta = None
+		self.pose_base_footprint = PoseStamped()
+		self.pose_base_footprint.header.frame_id = 'base_footprint'
+
+		self.amcl_pose = None
 
 		self._action_name = name
 		self._as = actionlib.SimpleActionServer("move_base", move_base_msgs.msg.MoveBaseAction, execute_cb=self.execute_cb, auto_start = False)
@@ -78,6 +79,7 @@ class MoveAction(object):
 
 		self.publisher = rospy.Publisher('/base_controller/command', Twist, queue_size=10)
 		self.goalmarkerPublisher = rospy.Publisher('move_base/goal_position', Marker, queue_size=32)
+		self.directionPublisher = rospy.Publisher('move_base/direction', Marker, queue_size=32)
 		self.areamarkerPublisher = rospy.Publisher('move_base/legal_area', MarkerArray, queue_size= 1, latch= True)
 
 		self.SoftBound = Bounds
@@ -85,6 +87,14 @@ class MoveAction(object):
 
 		self._tfBuffer = tf2_ros.Buffer()
 		self._listener = tf2_ros.TransformListener(self._tfBuffer)
+
+		rate = rospy.Rate(30)
+		transforms_available = False
+		while(not transforms_available and not rospy.is_shutdown()):
+			odom_to_basefootprint = self._tfBuffer.can_transform('base_footprint','odom_combined',rospy.Time())
+			map_to_odom = self._tfBuffer.can_transform('odom_combined','map',rospy.Time())
+			transforms_available = odom_to_basefootprint and map_to_odom
+			rate.sleep()
 
 		self._feedback = move_base_msgs.msg.MoveBaseFeedback()
 		self._result = move_base_msgs.msg.MoveBaseResult()
@@ -97,17 +107,16 @@ class MoveAction(object):
 		rospy.loginfo("move_base_interpolate startup successful")
 
 	def move_base_simple_cb(self, data):
-		print("resending move_base_simple/goal msg as an action")
 		move_base_action_goal = move_base_msgs.msg.MoveBaseGoal(data)
 		self._move_base_wrapper_ac.send_goal(move_base_action_goal)
 
 	def amcl_cb(self, data):
-		self.x = data.pose.pose.position.x
-		self.y = data.pose.pose.position.y
+		x = data.pose.pose.position.x
+		y = data.pose.pose.position.y
 		quaternion = data.pose.pose.orientation
 		quaternion = [quaternion.x, quaternion.y, quaternion.z, quaternion.w]
 		roll, pitch, yaw = euler_from_quaternion(quaternion)
-		self.theta = yaw
+		self.amcl_pose = Pose2D(x,y,yaw)
 
 	def publishAreaMarkers(self):
 		markerCount = 0
@@ -184,7 +193,7 @@ class MoveAction(object):
 		self.areamarkerPublisher.publish(markerArray)
 
 	def execute_cb(self, goal):
-		rate = rospy.Rate(20)
+		rate = rospy.Rate(30)
 		success = True
 
 		# Publish move_base goal marker
@@ -209,10 +218,8 @@ class MoveAction(object):
 		marker.frame_locked = True
 		self.goalmarkerPublisher.publish(marker)
 
-		pos = Pose2D(self.x,self.y,self.theta)
-
 		# Check if trixi is inside the bounds
-		if not self.check_bounds(pos, self.HardBound):
+		if not self.check_bounds(self.amcl_pose, self.HardBound):
 			rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
 			self._as.set_aborted(self._result)
 			return
@@ -227,9 +234,18 @@ class MoveAction(object):
 			return
 
 		while not rospy.is_shutdown():
+			map_to_odom = self._tfBuffer.lookup_transform('odom_combined','map',rospy.Time())
+			goal_odom = tf2_geometry_msgs.do_transform_pose(goal.target_pose, map_to_odom)
+
+			odom_to_base_footprint = self._tfBuffer.lookup_transform('base_footprint','odom_combined',rospy.Time())
+			goal_base_footprint = tf2_geometry_msgs.do_transform_pose(goal_odom, odom_to_base_footprint)
+
+			base_footprint_to_odom = self._tfBuffer.lookup_transform('odom_combined','base_footprint',rospy.Time())
+			odom_to_map = self._tfBuffer.lookup_transform('map','odom_combined',rospy.Time())
+			pose_odom = tf2_geometry_msgs.do_transform_pose(self.pose_base_footprint, base_footprint_to_odom)
+			pose_map = tf2_geometry_msgs.do_transform_pose(pose_odom, odom_to_map)
 			# Check if trixi is inside the bounds
-			pos.updatePose(self.x,self.y,self.theta)
-			if not self.check_bounds(pos, self.HardBound):
+			if not self.check_bounds(pose_map.pose.position, self.HardBound):
 				rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
 				self._as.set_aborted(self._result)
 				return
@@ -240,10 +256,17 @@ class MoveAction(object):
 				success = False
 				break
 			try:
-				goal.target_pose.header.stamp = rospy.Time()
-				goalBaseLink = self._tfBuffer.transform(goal.target_pose, 'base_footprint')
-				dir = goalBaseLink.pose.position
-				ignored1,ignored2,angle_diff = euler_from_quaternion([goalBaseLink.pose.orientation.x,goalBaseLink.pose.orientation.y,goalBaseLink.pose.orientation.z,goalBaseLink.pose.orientation.w])
+				position = goal_base_footprint.pose.position
+				dir = Pose2D(position.x,position.y,0)
+				_,_,angle_diff = euler_from_quaternion([goal_base_footprint.pose.orientation.x,goal_base_footprint.pose.orientation.y,
+									goal_base_footprint.pose.orientation.z,goal_base_footprint.pose.orientation.w])
+
+				while (abs(angle_diff) > math.pi):
+					if(angle_diff<math.pi):
+						angle_diff+=2*math.pi
+					elif(angle_diff > math.pi):
+						angle_diff-=2*math.pi
+
 				# TODO: fine tune on trixi
 				translation_error = math.sqrt(dir.x**2 + dir.y**2)
 				if not(-0.087 < angle_diff < 0.087) or (translation_error >= 0.1):
@@ -256,6 +279,31 @@ class MoveAction(object):
 					message.linear.x = dir.x
 					message.linear.y = dir.y
 					self.publisher.publish(message)
+
+					quaternion = quaternion_from_euler(0.0,0.0,np.arctan2(dir.y,dir.x))
+					marker = Marker()
+					marker.header.frame_id = "base_footprint"
+					marker.header.stamp = rospy.Time.now()
+					marker.id = 0
+					marker.type = 0
+					marker.action = Marker.ADD
+					marker.pose.position.x = 0
+					marker.pose.position.y = 0
+					marker.pose.position.z = 0
+					marker.pose.orientation.x = quaternion[0]
+					marker.pose.orientation.y = quaternion[1]
+					marker.pose.orientation.z = quaternion[2]
+					marker.pose.orientation.w = quaternion[3]
+					marker.scale.x = 1.0
+					marker.scale.y = 0.1
+					marker.scale.z = 0.1
+					marker.color.a = 1.0
+					marker.color.r = 1.0
+					marker.color.b = 0.0
+					marker.color.g = 1.0
+					marker.frame_locked = True
+					self.directionPublisher.publish(marker)
+
 				else:
 					break
 
