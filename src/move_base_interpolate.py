@@ -131,6 +131,7 @@ class MoveAction(object):
 			marker.header.stamp = rospy.Time.now()
 			marker.ns = "legal_area_corners"
 			marker.id = markerCount
+			markerCount += 1
 			marker.type = 3
 			marker.action = Marker.ADD
 			marker.pose.position.x = self.SoftBound[i]
@@ -145,7 +146,6 @@ class MoveAction(object):
 			marker.color.b = 0.0
 			marker.color.g = 0.0
 			marker.frame_locked = True
-			markerCount += 1
 			markerArray.markers.append(marker)
 			points.append(Point(self.SoftBound[i],self.SoftBound[i+1],0))
 		points.append(Point(self.SoftBound[0],self.SoftBound[1],0))
@@ -198,39 +198,52 @@ class MoveAction(object):
 
 		# Publish move_base goal marker
 		quaternion = goal.target_pose.pose.orientation
-		marker = Marker()
-		marker.header.frame_id = "map"
-		marker.header.stamp = rospy.Time.now()
-		marker.id = 0
-		marker.type = 0
-		marker.action = Marker.ADD
-		marker.pose.position.x = goal.target_pose.pose.position.x
-		marker.pose.position.y = goal.target_pose.pose.position.y
-		marker.pose.position.z = 0
-		marker.pose.orientation = quaternion
-		marker.scale.x = 1.0
-		marker.scale.y = 0.1
-		marker.scale.z = 0.1
-		marker.color.a = 1.0
-		marker.color.r = 0.0
-		marker.color.b = 1.0
-		marker.color.g = 0.0
-		marker.frame_locked = True
-		self.goalmarkerPublisher.publish(marker)
+		goal_pose_marker = Marker()
+		goal_pose_marker.header.frame_id = "map"
+		goal_pose_marker.header.stamp = rospy.Time.now()
+		goal_pose_marker.id = 0
+		goal_pose_marker.type = 0
+		goal_pose_marker.action = Marker.ADD
+		goal_pose_marker.pose.position.x = goal.target_pose.pose.position.x
+		goal_pose_marker.pose.position.y = goal.target_pose.pose.position.y
+		goal_pose_marker.pose.position.z = 0
+		goal_pose_marker.pose.orientation = quaternion
+		goal_pose_marker.scale.x = 1.0
+		goal_pose_marker.scale.y = 0.1
+		goal_pose_marker.scale.z = 0.1
+		goal_pose_marker.color.a = 1.0
+		goal_pose_marker.color.r = 0.0
+		goal_pose_marker.color.b = 1.0
+		goal_pose_marker.color.g = 0.0
+		goal_pose_marker.frame_locked = True
 
 		# Check if trixi is inside the bounds
+		passed_bounds_check = True
 		if not self.check_bounds(self.amcl_pose, self.HardBound):
-			rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
+			rospy.logerr('Starting pose is not in the legal area. Please use the joystick to navigate into the legal area.')
 			self._as.set_aborted(self._result)
-			return
+			passed_bounds_check = False
 
 		# Check if the target is inside the bounds
 		goalMap = self._tfBuffer.transform(goal.target_pose,"map")
-		ignored1,ignored2,yaw = euler_from_quaternion([goalMap.pose.orientation.x,goalMap.pose.orientation.y,goalMap.pose.orientation.z,goalMap.pose.orientation.w])
+		_,_,yaw = euler_from_quaternion([goalMap.pose.orientation.x,goalMap.pose.orientation.y,
+						 goalMap.pose.orientation.z,goalMap.pose.orientation.w])
 		goal2D = Pose2D(goalMap.pose.position.x, goalMap.pose.position.y, yaw)
-		if not self.check_bounds(goal2D, self.SoftBound):
-			rospy.logwarn('Requested point is outside the legal soft bound.')
+		if not self.check_bounds(goal2D, self.HardBound):
+			rospy.logerr('Requested point is outside the legal hard bound.')
 			self._as.set_aborted(self._result)
+			passed_bounds_check = False
+			goal_pose_marker.color.r = 1.0
+			goal_pose_marker.color.b = 0.0
+		elif not self.check_bounds(goal2D, self.SoftBound):
+			rospy.logerr('Requested point is outside the legal soft bound.')
+			self._as.set_aborted(self._result)
+			passed_bounds_check = False
+			goal_pose_marker.color.r = 1.0
+			goal_pose_marker.color.b = 0.0
+
+		self.goalmarkerPublisher.publish(goal_pose_marker)
+		if not passed_bounds_check:
 			return
 
 		while not rospy.is_shutdown():
@@ -246,7 +259,7 @@ class MoveAction(object):
 			pose_map = tf2_geometry_msgs.do_transform_pose(pose_odom, odom_to_map)
 			# Check if trixi is inside the bounds
 			if not self.check_bounds(pose_map.pose.position, self.HardBound):
-				rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
+				rospy.logwarn('Current pose is not in the legal area. Please use the joystick to navigate into the legal area.')
 				self._as.set_aborted(self._result)
 				return
 
@@ -274,7 +287,7 @@ class MoveAction(object):
 					max_ang_vel = math.pi/6
 					message.angular.z = clamp(angle_diff*0.8,-max_ang_vel,max_ang_vel)
 
-					max_lin_vel = 0.15
+					max_lin_vel = 0.30
 					dir = vec_clamp(dir, -max_lin_vel, max_lin_vel)
 					message.linear.x = dir.x
 					message.linear.y = dir.y
@@ -373,22 +386,35 @@ class MoveAction(object):
 					count += 1
 		return count%2==1
 
+def getRosParamOrDefault(param, default):
+	result = default
+	try:
+		result = rospy.get_param(param)
+	except KeyError: # Parameters were not defined.
+		rospy.loginfo(param + " was not defined. Assuming " + str(default))
+	return result
+
 if __name__ == '__main__':
 	rospy.init_node("move_base")
 	AREA_PARAMETER = 'move_base/legal_area'
 	BOUND_TOLERANCE_PARAMETER = 'move_base/bounds_tolerance_scale'
-	bounds_tolerance_scale = 1.05
+	MAX_TRANSLATION_VELOCITY = 'move_base/max_translation_velocity'
+	MAX_ROTATION_VELOCITY = 'move_base/max_rotation_velocity'
 
-	try:
-		bounds_tolerance_scale = rospy.get_param(BOUND_TOLERANCE_PARAMETER)
-	except KeyError: # Parameters were not defined.
-		rospy.loginfo(BOUND_TOLERANCE_PARAMETER+" was not defined. Assuming "+str(bounds_tolerance_scale))
+	bounds_tolerance_scale = 1.05
+	max_translation_vel = 0.30
+	max_rotation_vel = math.pi/6
+
+	bounds_tolerance_scale = getRosParamOrDefault(BOUND_TOLERANCE_PARAMETER, bounds_tolerance_scale)
 	if bounds_tolerance_scale < 1.0:
 		rospy.logwarn(BOUND_TOLERANCE_PARAMETER+" should be >= 1.0 to ensure hard bounds outside the defined polygon. Assume 1.0")
 		bounds_tolerance_scale = 1.0
+
+	max_translation_vel = getRosParamOrDefault(MAX_TRANSLATION_VELOCITY,max_translation_vel)
+	max_rotation_vel = getRosParamOrDefault(MAX_ROTATION_VELOCITY,max_rotation_vel)
+
 	try:
 		bounds = rospy.get_param(AREA_PARAMETER)
-
 		server = MoveAction(rospy.get_name(), bounds, bounds_tolerance_scale)
 		rospy.spin()
 	except KeyError: # Parameters were not defined.
