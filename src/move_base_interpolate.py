@@ -14,6 +14,17 @@ import sys
 FLOAT_MAX = sys.float_info.max
 FLOAT_MIN = sys.float_info.min
 
+def vec_clamp(vec, min, max):
+	length = np.sqrt(vec.x*vec.x +vec.y*vec.y)
+	if length < min:
+		vec.x = (vec.x/length)*min
+		vec.y = (vec.y/length)*min
+	if length > max:
+		vec.x = (vec.x/length)*max
+		vec.y = (vec.y/length)*max
+	return vec
+
+
 def clamp(x,min,max):
 	if x < min:
 		x = min
@@ -38,7 +49,6 @@ def scaleArea(points,scale):
 	centerx = sum(xs)/len(xs)
 	centery = sum(ys)/len(ys)
 
-	# scale*r = sqrt(scale^2*(x^2+y^2))
 	scale_squared = scale*scale
 	new_points = []
 	for x,y in zip(xs,ys):
@@ -55,9 +65,10 @@ def scaleArea(points,scale):
 
 class MoveAction(object):
 	def __init__(self, name, Bounds, bound_scale):
-		self.x = None
-		self.y = None
-		self.theta = None
+		self.pose_base_footprint = PoseStamped()
+		self.pose_base_footprint.header.frame_id = 'base_footprint'
+
+		self.amcl_pose = None
 
 		self._action_name = name
 		self._as = actionlib.SimpleActionServer("move_base", move_base_msgs.msg.MoveBaseAction, execute_cb=self.execute_cb, auto_start = False)
@@ -68,6 +79,7 @@ class MoveAction(object):
 
 		self.publisher = rospy.Publisher('/base_controller/command', Twist, queue_size=10)
 		self.goalmarkerPublisher = rospy.Publisher('move_base/goal_position', Marker, queue_size=32)
+		self.directionPublisher = rospy.Publisher('move_base/direction', Marker, queue_size=32)
 		self.areamarkerPublisher = rospy.Publisher('move_base/legal_area', MarkerArray, queue_size= 1, latch= True)
 
 		self.SoftBound = Bounds
@@ -75,6 +87,14 @@ class MoveAction(object):
 
 		self._tfBuffer = tf2_ros.Buffer()
 		self._listener = tf2_ros.TransformListener(self._tfBuffer)
+
+		rate = rospy.Rate(30)
+		transforms_available = False
+		while(not transforms_available and not rospy.is_shutdown()):
+			odom_to_basefootprint = self._tfBuffer.can_transform('base_footprint','odom_combined',rospy.Time())
+			map_to_odom = self._tfBuffer.can_transform('odom_combined','map',rospy.Time())
+			transforms_available = odom_to_basefootprint and map_to_odom
+			rate.sleep()
 
 		self._feedback = move_base_msgs.msg.MoveBaseFeedback()
 		self._result = move_base_msgs.msg.MoveBaseResult()
@@ -87,17 +107,16 @@ class MoveAction(object):
 		rospy.loginfo("move_base_interpolate startup successful")
 
 	def move_base_simple_cb(self, data):
-		print("resending move_base_simple/goal msg as an action")
 		move_base_action_goal = move_base_msgs.msg.MoveBaseGoal(data)
 		self._move_base_wrapper_ac.send_goal(move_base_action_goal)
 
 	def amcl_cb(self, data):
-		self.x = data.pose.pose.position.x
-		self.y = data.pose.pose.position.y
+		x = data.pose.pose.position.x
+		y = data.pose.pose.position.y
 		quaternion = data.pose.pose.orientation
 		quaternion = [quaternion.x, quaternion.y, quaternion.z, quaternion.w]
 		roll, pitch, yaw = euler_from_quaternion(quaternion)
-		self.theta = yaw
+		self.amcl_pose = Pose2D(x,y,yaw)
 
 	def publishAreaMarkers(self):
 		markerCount = 0
@@ -112,6 +131,7 @@ class MoveAction(object):
 			marker.header.stamp = rospy.Time.now()
 			marker.ns = "legal_area_corners"
 			marker.id = markerCount
+			markerCount += 1
 			marker.type = 3
 			marker.action = Marker.ADD
 			marker.pose.position.x = self.SoftBound[i]
@@ -126,7 +146,6 @@ class MoveAction(object):
 			marker.color.b = 0.0
 			marker.color.g = 0.0
 			marker.frame_locked = True
-			markerCount += 1
 			markerArray.markers.append(marker)
 			points.append(Point(self.SoftBound[i],self.SoftBound[i+1],0))
 		points.append(Point(self.SoftBound[0],self.SoftBound[1],0))
@@ -174,63 +193,73 @@ class MoveAction(object):
 		self.areamarkerPublisher.publish(markerArray)
 
 	def execute_cb(self, goal):
-		rate = rospy.Rate(20)
+		rate = rospy.Rate(30)
 		success = True
 
 		# Publish move_base goal marker
 		quaternion = goal.target_pose.pose.orientation
-		marker = Marker()
-		marker.header.frame_id = "map"
-		marker.header.stamp = rospy.Time.now()
-		marker.id = 0
-		marker.type = 0
-		marker.action = Marker.ADD
-		marker.pose.position.x = goal.target_pose.pose.position.x
-		marker.pose.position.y = goal.target_pose.pose.position.y
-		marker.pose.position.z = 0
-		marker.pose.orientation = quaternion
-		marker.scale.x = 1.0
-		marker.scale.y = 0.1
-		marker.scale.z = 0.1
-		marker.color.a = 1.0
-		marker.color.r = 0.0
-		marker.color.b = 1.0
-		marker.color.g = 0.0
-		marker.frame_locked = True
-		self.goalmarkerPublisher.publish(marker)
-
-		pos = Pose2D(self.x,self.y,self.theta)
+		goal_pose_marker = Marker()
+		goal_pose_marker.header.frame_id = "map"
+		goal_pose_marker.header.stamp = rospy.Time.now()
+		goal_pose_marker.id = 0
+		goal_pose_marker.type = 0
+		goal_pose_marker.action = Marker.ADD
+		goal_pose_marker.pose.position.x = goal.target_pose.pose.position.x
+		goal_pose_marker.pose.position.y = goal.target_pose.pose.position.y
+		goal_pose_marker.pose.position.z = 0
+		goal_pose_marker.pose.orientation = quaternion
+		goal_pose_marker.scale.x = 1.0
+		goal_pose_marker.scale.y = 0.1
+		goal_pose_marker.scale.z = 0.1
+		goal_pose_marker.color.a = 1.0
+		goal_pose_marker.color.r = 0.0
+		goal_pose_marker.color.b = 1.0
+		goal_pose_marker.color.g = 0.0
+		goal_pose_marker.frame_locked = True
 
 		# Check if trixi is inside the bounds
-		if not self.check_bounds(pos, self.HardBound):
-			rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
-			#self._result.success = False
-			#self._result.error_message = "Trixi is not in the legal area. Please use the joystick to navigate into the legal area."
+		passed_bounds_check = True
+		if not self.check_bounds(self.amcl_pose, self.HardBound):
+			rospy.logerr('Starting pose is not in the legal area. Please use the joystick to navigate into the legal area.')
 			self._as.set_aborted(self._result)
-			return
+			passed_bounds_check = False
 
 		# Check if the target is inside the bounds
-		#self._transformer.waitForTransform('map', goal.target_pose.header.frame_id, rospy.Time(), rospy.Duration(2))
 		goalMap = self._tfBuffer.transform(goal.target_pose,"map")
-		ignored1,ignored2,yaw = euler_from_quaternion([goalMap.pose.orientation.x,goalMap.pose.orientation.y,goalMap.pose.orientation.z,goalMap.pose.orientation.w])
+		_,_,yaw = euler_from_quaternion([goalMap.pose.orientation.x,goalMap.pose.orientation.y,
+						 goalMap.pose.orientation.z,goalMap.pose.orientation.w])
 		goal2D = Pose2D(goalMap.pose.position.x, goalMap.pose.position.y, yaw)
-		if not self.check_bounds(goal2D, self.SoftBound):
-			rospy.logwarn('Requested point is outside the legal soft bound.')
-			#self._result.success = False
-			#self._result.error_message = "Requested point is outside the legal bounds."
+		if not self.check_bounds(goal2D, self.HardBound):
+			rospy.logerr('Requested point is outside the legal hard bound.')
 			self._as.set_aborted(self._result)
+			passed_bounds_check = False
+			goal_pose_marker.color.r = 1.0
+			goal_pose_marker.color.b = 0.0
+		elif not self.check_bounds(goal2D, self.SoftBound):
+			rospy.logerr('Requested point is outside the legal soft bound.')
+			self._as.set_aborted(self._result)
+			passed_bounds_check = False
+			goal_pose_marker.color.r = 1.0
+			goal_pose_marker.color.b = 0.0
+
+		self.goalmarkerPublisher.publish(goal_pose_marker)
+		if not passed_bounds_check:
 			return
 
-		integral_angle = 0
-		integral_translation_x = 0
-		integral_translation_y = 0
 		while not rospy.is_shutdown():
+			map_to_odom = self._tfBuffer.lookup_transform('odom_combined','map',rospy.Time())
+			goal_odom = tf2_geometry_msgs.do_transform_pose(goal.target_pose, map_to_odom)
+
+			odom_to_base_footprint = self._tfBuffer.lookup_transform('base_footprint','odom_combined',rospy.Time())
+			goal_base_footprint = tf2_geometry_msgs.do_transform_pose(goal_odom, odom_to_base_footprint)
+
+			base_footprint_to_odom = self._tfBuffer.lookup_transform('odom_combined','base_footprint',rospy.Time())
+			odom_to_map = self._tfBuffer.lookup_transform('map','odom_combined',rospy.Time())
+			pose_odom = tf2_geometry_msgs.do_transform_pose(self.pose_base_footprint, base_footprint_to_odom)
+			pose_map = tf2_geometry_msgs.do_transform_pose(pose_odom, odom_to_map)
 			# Check if trixi is inside the bounds
-			pos.updatePose(self.x,self.y,self.theta)
-			if not self.check_bounds(pos, self.HardBound):
-				rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
-				#self._result.success = False
-				#self._result.error_message = "Trixi is not in the legal area. Please use the joystick to navigate into the legal area."
+			if not self.check_bounds(pose_map.pose.position, self.HardBound):
+				rospy.logwarn('Current pose is not in the legal area. Please use the joystick to navigate into the legal area.')
 				self._as.set_aborted(self._result)
 				return
 
@@ -240,34 +269,58 @@ class MoveAction(object):
 				success = False
 				break
 			try:
-				goal.target_pose.header.stamp = rospy.Time() #rospy.get_rostime()
-				goalBaseLink = self._tfBuffer.transform(goal.target_pose, 'base_footprint')
-				dir = goalBaseLink.pose.position
-				ignored1,ignored2,angle_diff = euler_from_quaternion([goalBaseLink.pose.orientation.x,goalBaseLink.pose.orientation.y,goalBaseLink.pose.orientation.z,goalBaseLink.pose.orientation.w])
+				position = goal_base_footprint.pose.position
+				dir = Pose2D(position.x,position.y,0)
+				_,_,angle_diff = euler_from_quaternion([goal_base_footprint.pose.orientation.x,goal_base_footprint.pose.orientation.y,
+									goal_base_footprint.pose.orientation.z,goal_base_footprint.pose.orientation.w])
+
+				while (abs(angle_diff) > math.pi):
+					if(angle_diff<math.pi):
+						angle_diff+=2*math.pi
+					elif(angle_diff > math.pi):
+						angle_diff-=2*math.pi
+
 				# TODO: fine tune on trixi
-				# TODO: PI-controller
 				translation_error = math.sqrt(dir.x**2 + dir.y**2)
-				integral_angle += angle_diff
-				integral_translation_x += dir.x
-				integral_translation_y += dir.y
-				if not(-0.087 < angle_diff < 0.087):  # ca. 5 degrees of tollerance
+				if not(-0.087 < angle_diff < 0.087) or (translation_error >= 0.1):
 					message = Twist()
 					max_ang_vel = math.pi/6
-					# TODO fine tune on trixi
 					message.angular.z = clamp(angle_diff*0.8,-max_ang_vel,max_ang_vel)
+
+					max_lin_vel = 0.30
+					dir = vec_clamp(dir, -max_lin_vel, max_lin_vel)
+					message.linear.x = dir.x
+					message.linear.y = dir.y
 					self.publisher.publish(message)
-				elif not (translation_error < 0.1):
-					message = Twist()
-					max_lin_vel = 0.15
-					# TODO fine tune on trixi
-					message.linear.x = clamp(dir.x,-max_lin_vel,max_lin_vel)
-					message.linear.y = clamp(dir.y,-max_lin_vel,max_lin_vel)
-					self.publisher.publish(message)
+
+					quaternion = quaternion_from_euler(0.0,0.0,np.arctan2(dir.y,dir.x))
+					marker = Marker()
+					marker.header.frame_id = "base_footprint"
+					marker.header.stamp = rospy.Time.now()
+					marker.id = 0
+					marker.type = 0
+					marker.action = Marker.ADD
+					marker.pose.position.x = 0
+					marker.pose.position.y = 0
+					marker.pose.position.z = 0
+					marker.pose.orientation.x = quaternion[0]
+					marker.pose.orientation.y = quaternion[1]
+					marker.pose.orientation.z = quaternion[2]
+					marker.pose.orientation.w = quaternion[3]
+					marker.scale.x = 1.0
+					marker.scale.y = 0.1
+					marker.scale.z = 0.1
+					marker.color.a = 1.0
+					marker.color.r = 1.0
+					marker.color.b = 0.0
+					marker.color.g = 1.0
+					marker.frame_locked = True
+					self.directionPublisher.publish(marker)
+
 				else:
 					break
 
 				# TODO: fill out move_base feedback
-				# should you use the amcl position or just ask tf for (0,0,0) base_footprint transformed to map
 				self._as.publish_feedback(self._feedback)
 
 			# TODO: doublecheck the documentation if these exceptions are still relevant in tf2_ros for the transform method
@@ -279,8 +332,6 @@ class MoveAction(object):
 			rate.sleep()
 
 		if success:
-			#self._result.success = True
-			#self._result.error_message = "We successfully reached the specified goal."
 			rospy.loginfo('Succeeded')
 			self._as.set_succeeded(self._result)
 
@@ -335,22 +386,35 @@ class MoveAction(object):
 					count += 1
 		return count%2==1
 
+def getRosParamOrDefault(param, default):
+	result = default
+	try:
+		result = rospy.get_param(param)
+	except KeyError: # Parameters were not defined.
+		rospy.loginfo(param + " was not defined. Assuming " + str(default))
+	return result
+
 if __name__ == '__main__':
 	rospy.init_node("move_base")
 	AREA_PARAMETER = 'move_base/legal_area'
 	BOUND_TOLERANCE_PARAMETER = 'move_base/bounds_tolerance_scale'
-	bounds_tolerance_scale = 1.05
+	MAX_TRANSLATION_VELOCITY = 'move_base/max_translation_velocity'
+	MAX_ROTATION_VELOCITY = 'move_base/max_rotation_velocity'
 
-	try:
-		bounds_tolerance_scale = rospy.get_param(BOUND_TOLERANCE_PARAMETER)
-	except KeyError: # Parameters were not defined.
-		rospy.loginfo(BOUND_TOLERANCE_PARAMETER+" was not defined. Assuming "+str(bounds_tolerance_scale))
+	bounds_tolerance_scale = 1.05
+	max_translation_vel = 0.30
+	max_rotation_vel = math.pi/6
+
+	bounds_tolerance_scale = getRosParamOrDefault(BOUND_TOLERANCE_PARAMETER, bounds_tolerance_scale)
 	if bounds_tolerance_scale < 1.0:
 		rospy.logwarn(BOUND_TOLERANCE_PARAMETER+" should be >= 1.0 to ensure hard bounds outside the defined polygon. Assume 1.0")
 		bounds_tolerance_scale = 1.0
+
+	max_translation_vel = getRosParamOrDefault(MAX_TRANSLATION_VELOCITY,max_translation_vel)
+	max_rotation_vel = getRosParamOrDefault(MAX_ROTATION_VELOCITY,max_rotation_vel)
+
 	try:
 		bounds = rospy.get_param(AREA_PARAMETER)
-
 		server = MoveAction(rospy.get_name(), bounds, bounds_tolerance_scale)
 		rospy.spin()
 	except KeyError: # Parameters were not defined.
