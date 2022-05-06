@@ -201,7 +201,7 @@ class MoveAction(object):
 
 		pos = Pose2D(self.x,self.y,self.theta)
 
-		# Check if trixi is inside the bounds
+		# Check if PR2 is inside the bounds
 		if not self.check_bounds(pos, self.HardBound):
 			rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
 			#self._result.success = False
@@ -225,7 +225,7 @@ class MoveAction(object):
 		integral_translation_x = 0
 		integral_translation_y = 0
 		while not rospy.is_shutdown():
-			# Check if trixi is inside the bounds
+			# Check if PR2 is inside the bounds
 			pos.updatePose(self.x,self.y,self.theta)
 			if not self.check_bounds(pos, self.HardBound):
 				rospy.logwarn('Trixi is not in the legal area. Please use the joystick to navigate into the legal area.')
@@ -244,7 +244,7 @@ class MoveAction(object):
 				goalBaseLink = self._tfBuffer.transform(goal.target_pose, 'base_footprint')
 				dir = goalBaseLink.pose.position
 				ignored1,ignored2,angle_diff = euler_from_quaternion([goalBaseLink.pose.orientation.x,goalBaseLink.pose.orientation.y,goalBaseLink.pose.orientation.z,goalBaseLink.pose.orientation.w])
-				# TODO: fine tune on trixi
+				# TODO: fine tune on PR2
 				# TODO: PI-controller
 				translation_error = math.sqrt(dir.x**2 + dir.y**2)
 				integral_angle += angle_diff
@@ -253,13 +253,13 @@ class MoveAction(object):
 				if not(-0.087 < angle_diff < 0.087):  # ca. 5 degrees of tollerance
 					message = Twist()
 					max_ang_vel = math.pi/6
-					# TODO fine tune on trixi
+					# TODO fine tune on PR2
 					message.angular.z = clamp(angle_diff*0.8,-max_ang_vel,max_ang_vel)
 					self.publisher.publish(message)
 				elif not (translation_error < 0.1):
 					message = Twist()
 					max_lin_vel = 0.15
-					# TODO fine tune on trixi
+					# TODO fine tune on PR2
 					message.linear.x = clamp(dir.x,-max_lin_vel,max_lin_vel)
 					message.linear.y = clamp(dir.y,-max_lin_vel,max_lin_vel)
 					self.publisher.publish(message)
